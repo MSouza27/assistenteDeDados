@@ -4,148 +4,157 @@ import os
 from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
 from langchain.agents import create_react_agent, AgentExecutor
-
 from ferramentas import criar_ferramentas
+import pdfplumber
 
 # Inicia o app
 st.set_page_config(page_title="Assistente de análise de dados com IA", layout="centered")
 st.title("🐬 Dolphin Analytics - Assistente de análise de dados com IA")
 
-# Descrição da ferramenta
 st.info("""
-Este assistente utiliza um agente, criado com Langchain, para te ajudar a explorar, analisar e visualizar dados de forma interativa. Basta fazer o upload de um arquivo CSV e você poderá:
+Este assistente utiliza um agente com Langchain para explorar, analisar e visualizar dados interativamente. Faça upload de um arquivo **CSV, Excel ou PDF** e você poderá:
 
 - 📈 **Gerar relatórios automáticos**
-- 🔍 **Fazer perguntas simples sobre os dados**
-- 🤖 **Criar gráficos automaticamente** com base em perguntas em linguagem natural.
+- 🔍 **Fazer perguntas sobre os dados**
+- 🤖 **Criar gráficos com linguagem natural**
 """)
 
-# Upload do CSV
-st.markdown("### 📁 Faça upload do seu arquivo CSV")
-arquivo_carregado = st.file_uploader("Selecione um arquivo CSV", type="csv", label_visibility="collapsed")
+# Upload do arquivo
+st.markdown("### 📁 Faça upload do seu arquivo (CSV, Excel ou PDF)")
+arquivo_carregado = st.file_uploader("Selecione um arquivo", type=["csv", "xls", "xlsx", "pdf"], label_visibility="collapsed")
+
+
+# 🔧 Função atualizada para ler diferentes tipos de arquivos
+def carregar_arquivo(arquivo):
+    nome = arquivo.name.lower()
+    
+    try:
+        if nome.endswith(".csv"):
+            try:
+                return pd.read_csv(arquivo)
+            except UnicodeDecodeError:
+                return pd.read_csv(arquivo, encoding="latin1")
+        
+        elif nome.endswith((".xls", ".xlsx")):
+            return pd.read_excel(arquivo)
+        
+        elif nome.endswith(".pdf"):
+            with pdfplumber.open(arquivo) as pdf:
+                texto = ""
+                for pagina in pdf.pages:
+                    texto += pagina.extract_text() + "\n"
+                return pd.DataFrame({"conteudo_pdf": [texto]})
+        
+        else:
+            raise ValueError("Formato de arquivo não suportado.")
+    
+    except Exception as e:
+        st.error(f"Erro ao ler o arquivo: {str(e)}")
+        return None
+
 
 if arquivo_carregado:
-    df = pd.read_csv(arquivo_carregado)
-    st.success("Arquivo carregado com sucesso!")
-    st.markdown("### Primeiras linhas do DataFrame")
-    st.dataframe(df.head())
+    df = carregar_arquivo(arquivo_carregado)
 
-    # Gera exemplos dinâmicos com base nas colunas do CSV
-    colunas = df.columns.tolist()
-    if len(colunas) >= 2:
-        exemplo_coluna1 = colunas[0]
-        exemplo_coluna2 = colunas[1]
+    if df is None or df.empty:
+        st.error("Não foi possível carregar os dados. Verifique o conteúdo do arquivo.")
     else:
-        exemplo_coluna1 = exemplo_coluna2 = colunas[0]
+        st.success("Arquivo carregado com sucesso!")
+        st.markdown("### Primeiras linhas do DataFrame")
+        st.dataframe(df.head())
 
-    exemplo_pergunta = f"Qual é a média de {exemplo_coluna1}?"
-    exemplo_grafico = f"Crie um gráfico da média de {exemplo_coluna1} por {exemplo_coluna2}."
+        colunas = df.columns.tolist()
+        exemplo_coluna1 = colunas[0]
+        exemplo_coluna2 = colunas[1] if len(colunas) > 1 else colunas[0]
 
-    # LLM
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-    llm = ChatGroq(
-        api_key=GROQ_API_KEY,
-        model_name="llama3-70b-8192",
-        temperature=0
-    )
+        exemplo_pergunta = f"Qual é a média de {exemplo_coluna1}?"
+        exemplo_grafico = f"Crie um gráfico da média de {exemplo_coluna1} por {exemplo_coluna2}."
 
-    # Ferramentas
-    tools = criar_ferramentas(df)
-
-    # Prompt react
-    df_head = df.head().to_markdown()
-
-    prompt_react_pt = PromptTemplate(
-        input_variables=["input", "agent_scratchpad", "tools", "tool_names", "df_head"],
-        template="""
-        Você é um assistente que sempre responde em português.
-
-        Você tem acesso a um dataframe pandas chamado `df`.
-        Aqui estão as primeiras linhas do Dataframe, obtidas com `df.head().to_markdown()`:
-        {df_head}
-
-        Responda às seguintes perguntas da melhor forma possível.
-
-        Para isso, você tem acesso às seguintes ferramentas:
-        {tools}
-
-        Use o seguinte formato:
-
-        Question: a pergunta de entrada que você deve responder
-        Thought: você deve sempre pensar no que fazer
-        Action: a ação a ser tomada, deve ser uma das [{tool_names}]
-        Action Input: a entrada para a ação
-        Observation: o resultado da ação
-        ... (este Thought/Action/Action Input/Observation pode se repetir N vezes)
-        Thought: Agora eu sei a resposta final
-        Final Answer: a resposta final para a pergunta de entrada original.
-        Quando usar a ferramenta_python: formate sua resposta final de forma clara, em lista, com valores
-
-        Comece!
-
-        Question: {input}
-        Thought: {agent_scratchpad}"""
-    )
-
-    # Criação do agente e executor
-    agente = create_react_agent(llm=llm, tools=tools, prompt=prompt_react_pt.partial(
-        df_head=df_head,
-        tools="\n".join([tool.description for tool in tools]),
-        tool_names=", ".join([tool.name for tool in tools])
-    ))
-
-    orquestrador = AgentExecutor(agent=agente, tools=tools, verbose=True, handle_parsing_errors=True)
-
-    # AÇÕES RÁPIDAS
-    st.markdown("---")
-    st.markdown("### ⚡ Ações rápidas")
-
-    if st.button("📄 Relatório de informações gerais", key="botao_relatorio_geral"):
-        with st.spinner("Gerando relatório 🧞"):
-            resposta = orquestrador.invoke({"input": "Quero um relatório com informações sobre os dados"})
-        st.session_state['relatorio_geral'] = resposta["output"]
-
-    if 'relatorio_geral' in st.session_state:
-        with st.expander("Resultado: Relatório de informações gerais"):
-            st.markdown(st.session_state['relatorio_geral'])
-        st.download_button(
-            label="📅 Baixar relatório",
-            data=st.session_state['relatorio_geral'],
-            file_name="relatorio_informacoes_gerais.md",
-            mime="text/markdown"
+        GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+        llm = ChatGroq(
+            api_key=GROQ_API_KEY,
+            model_name="llama3-70b-8192",
+            temperature=0
         )
 
-    if st.button("📄 Relatório de estatísticas descritivas", key="botao_relatorio_estatisticas"):
-        with st.spinner("Gerando relatório 🧞"):
-            resposta = orquestrador.invoke({"input": "Quero um relatório de estatísticas descritivas"})
-        st.session_state['relatorio_estatisticas'] = resposta["output"]
+        tools = criar_ferramentas(df)
+        df_head = df.head().to_markdown()
 
-    if 'relatorio_estatisticas' in st.session_state:
-        with st.expander("Resultado: Relatório de estatísticas descritivas"):
-            st.markdown(st.session_state['relatorio_estatisticas'])
-        st.download_button(
-            label="📅 Baixar relatório",
-            data=st.session_state['relatorio_estatisticas'],
-            file_name="relatorio_estatisticas_descritivas.md",
-            mime="text/markdown"
+        prompt_react_pt = PromptTemplate(
+            input_variables=["input", "agent_scratchpad", "tools", "tool_names", "df_head"],
+            template="""
+            Você é um assistente que sempre responde em português.
+
+            Você tem acesso a um dataframe pandas chamado `df`.
+            Aqui estão as primeiras linhas do DataFrame:
+            {df_head}
+
+            Responda às seguintes perguntas da melhor forma possível.
+
+            Para isso, você tem acesso às seguintes ferramentas:
+            {tools}
+
+            Use o seguinte formato:
+
+            Question: a pergunta de entrada
+            Thought: seu pensamento
+            Action: a ação a ser tomada (uma das [{tool_names}])
+            Action Input: a entrada da ação
+            Observation: o resultado da ação
+            ...
+            Thought: Agora eu sei a resposta final
+            Final Answer: a resposta final
+
+            Question: {input}
+            Thought: {agent_scratchpad}
+            """
         )
 
-    # PERGUNTA SOBRE OS DADOS
-    st.markdown("---")
-    st.markdown("### 🔎 Perguntas sobre os dados")
-    pergunta_sobre_dados = st.text_input(f"Faça uma pergunta sobre os dados (ex: '{exemplo_pergunta}')")
-    if st.button("Responder pergunta", key="responder_pergunta_dados"):
-        with st.spinner("Analisando os dados 🧞"):
-            resposta = orquestrador.invoke({"input": pergunta_sobre_dados})
-        st.markdown(resposta["output"])
+        agente = create_react_agent(llm=llm, tools=tools, prompt=prompt_react_pt.partial(
+            df_head=df_head,
+            tools="\n".join([tool.description for tool in tools]),
+            tool_names=", ".join([tool.name for tool in tools])
+        ))
 
-    # GERAÇÃO DE GRÁFICOS
-    st.markdown("---")
-    st.markdown("### 📈 Criar gráfico com base em uma pergunta")
-    pergunta_grafico = st.text_input(f"Digite o que deseja visualizar (ex: '{exemplo_grafico}')")
-    if st.button("Gerar gráfico", key="gerar_grafico"):
-        with st.spinner("Gerando o gráfico 🧞"):
-            orquestrador.invoke({"input": pergunta_grafico})
+        orquestrador = AgentExecutor(agent=agente, tools=tools, verbose=True, handle_parsing_errors=True)
+
+        st.markdown("---")
+        st.markdown("### ⚡ Ações rápidas")
+
+        if st.button("📄 Relatório de informações gerais"):
+            with st.spinner("Gerando relatório 🧞"):
+                resposta = orquestrador.invoke({"input": "Quero um relatório com informações sobre os dados"})
+            st.session_state['relatorio_geral'] = resposta["output"]
+
+        if 'relatorio_geral' in st.session_state:
+            with st.expander("Resultado: Relatório de informações gerais"):
+                st.markdown(st.session_state['relatorio_geral'])
+            st.download_button("📅 Baixar relatório", st.session_state['relatorio_geral'], "relatorio_informacoes_gerais.md", "text/markdown")
+
+        if st.button("📄 Relatório de estatísticas descritivas"):
+            with st.spinner("Gerando relatório 🧞"):
+                resposta = orquestrador.invoke({"input": "Quero um relatório de estatísticas descritivas"})
+            st.session_state['relatorio_estatisticas'] = resposta["output"]
+
+        if 'relatorio_estatisticas' in st.session_state:
+            with st.expander("Resultado: Relatório de estatísticas descritivas"):
+                st.markdown(st.session_state['relatorio_estatisticas'])
+            st.download_button("📅 Baixar relatório", st.session_state['relatorio_estatisticas'], "relatorio_estatisticas_descritivas.md", "text/markdown")
+
+        st.markdown("---")
+        st.markdown("### 🔎 Perguntas sobre os dados")
+        pergunta = st.text_input(f"Faça uma pergunta (ex: '{exemplo_pergunta}')")
+        if st.button("Responder"):
+            with st.spinner("Analisando os dados 🧞"):
+                resposta = orquestrador.invoke({"input": pergunta})
+            st.markdown(resposta["output"])
+
+        st.markdown("---")
+        st.markdown("### 📈 Criar gráfico com base em uma pergunta")
+        pergunta_grafico = st.text_input(f"Digite o que deseja visualizar (ex: '{exemplo_grafico}')")
+        if st.button("Gerar gráfico"):
+            with st.spinner("Gerando o gráfico 🧞"):
+                orquestrador.invoke({"input": pergunta_grafico})
 
 else:
-    st.warning("Por favor, carregue um arquivo CSV para continuar.")
+    st.warning("Por favor, carregue um arquivo CSV, Excel ou PDF para continuar.")
