@@ -5,7 +5,6 @@ from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
 from langchain.agents import create_react_agent, AgentExecutor
 from ferramentas import criar_ferramentas
-import pdfplumber
 
 # Inicia o app
 st.set_page_config(page_title="Assistente de análise de dados com IA", layout="centered")
